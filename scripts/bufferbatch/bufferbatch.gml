@@ -1,3 +1,25 @@
+/// .Destroy()
+/// 
+/// .FromBuffer(buffer)
+/// 
+/// .CopyFromBuffer(buffer)
+/// 
+/// .FromString(string, ...)
+/// 
+/// .Delete(position, count)
+/// 
+/// .Insert(position, string, ...)
+/// 
+/// .Overwrite(position, string, ...)
+/// 
+/// .Prefix(string, ...)
+/// 
+/// .Suffix(string, ...)
+/// 
+/// .GetString()
+/// 
+/// .GetBuffer()
+
 function BufferBatch() constructor
 {
     __destroyed  = false;
@@ -33,6 +55,10 @@ function BufferBatch() constructor
         
         __commands = undefined;
     }
+    
+    
+    
+    #region Return
     
     static GetString = function()
     {
@@ -184,6 +210,8 @@ function BufferBatch() constructor
         
         return __outBuffer;
     }
+    
+    #endregion
     
     
     
