@@ -4,47 +4,38 @@
 /// 
 /// .CopyFromBuffer(buffer)
 /// 
-/// .FromString(string, ...)
+/// .GetBuffer()
 /// 
 /// .Delete(position, count)
 /// 
-/// .InsertString(position, string, ...)
+/// .Insert(position, value, [datatype])
 /// 
-/// .OverwriteString(position, string, ...)
+/// .Overwrite(position, value, [datatype])
 /// 
-/// .PrefixString(string, ...)
-/// 
-/// .SuffixString(string, ...)
+/// .FromString(string, ...)
 /// 
 /// .GetString()
-/// 
-/// .GetBuffer()
+
+#macro __BUFFER_BATCH_DELETE     -1
+#macro __BUFFER_BATCH_OVERWRITE   0
+#macro __BUFFER_BATCH_INSERT      1
 
 function BufferBatch() constructor
 {
-    __destroyed  = false;
-    __inBuffer   = undefined;
-    __workBuffer = undefined;
-    __outBuffer  = undefined;
-    __commands   = [];
+    __inBuffer  = undefined;
+    __outBuffer = undefined;
+    __commands  = [];
+    
+    __inBufferCopied = false;
     
     
     
-    static Destroy = function()
+    static FreeMemory = function()
     {
-        if (__destroyed) return;
-        __destroyed = true;
-        
-        if (__inBuffer != undefined)
+        if ((__inBuffer != undefined) && __inBufferCopied)
         {
             buffer_delete(__inBuffer);
             __inBuffer = undefined;
-        }
-        
-        if (__workBuffer != undefined)
-        {
-            buffer_delete(__workBuffer);
-            __workBuffer = undefined;
         }
         
         if (__outBuffer != undefined)
@@ -53,8 +44,55 @@ function BufferBatch() constructor
             __outBuffer = undefined;
         }
         
-        __commands = undefined;
+        array_resize(__commands, 0);
     }
+    
+    
+    
+    #region Ingest
+    
+    static FromBuffer = function(_buffer)
+    {
+        if ((__inBuffer != undefined) && __inBufferCopied)
+        {
+            buffer_delete(__inBuffer);
+        }
+        
+        __inBuffer = _buffer;
+        __inBufferCopied = false;
+        
+        return self;
+    }
+    
+    static CopyFromBuffer = function(_buffer, _start = 0, _count = (buffer_get_size(_buffer) - _start))
+    {
+        if ((__inBuffer != undefined) && __inBufferCopied)
+        {
+            buffer_delete(__inBuffer);
+        }
+        
+        __inBuffer = buffer_create(_count, buffer_grow, 1);
+        buffer_copy(__inBuffer, _start, _count, _buffer, 0);
+        __inBufferCopied = true;
+        
+        return self;
+    }
+    
+    static FromString = function(_string)
+    {
+        if ((__inBuffer != undefined) && __inBufferCopied)
+        {
+            buffer_delete(__inBuffer);
+        }
+        
+        __inBuffer = buffer_create(string_byte_length(_string), buffer_grow, 1);
+        buffer_write(__inBuffer, buffer_text, _string);
+        __inBufferCopied = true;
+        
+        return self;
+    }
+    
+    #endregion
     
     
     
@@ -70,15 +108,17 @@ function BufferBatch() constructor
     
     static GetBuffer = function()
     {
+        if (__outBuffer != undefined)
+        {
+            buffer_delete(__outBuffer);
+            __outBuffer = undefined;
+        }
+        
         //Early-out if we have no commands set up
         if (array_length(__commands) <= 0)
         {
-            if (__outBuffer == undefined)
-            {
-                __outBuffer = buffer_create(buffer_get_size(__inBuffer), buffer_grow, 1);
-                buffer_copy(__inBuffer, 0, buffer_get_size(__inBuffer), __outBuffer, 0);
-            }
-            
+            __outBuffer = buffer_create(buffer_get_size(__inBuffer), buffer_grow, 1);
+            buffer_copy(__inBuffer, 0, buffer_get_size(__inBuffer), __outBuffer, 0);
             return __outBuffer;
         }
         
@@ -99,7 +139,8 @@ function BufferBatch() constructor
         //Figure out the final size of the output buffer
         //TODO - Do this as we're adding commands
         //TODO - Do we really need this? A greedy estimate is fine
-        var _inputSize  = buffer_get_size(__inBuffer);
+        var _inBuffer   = __inBuffer;
+        var _inputSize  = buffer_get_size(_inBuffer);
         var _inputPos   = 0;
         var _outputSize = _inputSize;
         
@@ -111,7 +152,7 @@ function BufferBatch() constructor
             
             switch(_command.__type)
             {
-                case "delete":
+                case __BUFFER_BATCH_DELETE:
                     if (_inputPos + _count > _inputSize)
                     {
                         _count = _inputSize - _inputPos;
@@ -122,15 +163,13 @@ function BufferBatch() constructor
                     _inputPos   += _count;
                 break;
                 
-                case "insert":
-                case "prefix":
-                case "suffix":
-                    _outputSize += _count;
-                break;
-                
-                case "overwrite":
+                case __BUFFER_BATCH_OVERWRITE:
                     _outputSize += max(0, _count - (_inputSize - _inputPos));
                     _inputPos   += _count;
+                break;
+                
+                case __BUFFER_BATCH_INSERT:
+                    _outputSize += _count;
                 break;
             }
             
@@ -143,7 +182,8 @@ function BufferBatch() constructor
             return __outBuffer;
         }
         
-        __outBuffer = buffer_create(_outputSize, buffer_grow, 1);
+        var _outBuffer = buffer_create(_outputSize, buffer_grow, 1);
+        __outBuffer = _outBuffer;
         
         var _inputPos  = 0;
         var _outputPos = 0;
@@ -164,8 +204,8 @@ function BufferBatch() constructor
                 //input buffer to the output buffer to fill in the gap.
                 var _count = _commandPos - _inputPos;
                 
-                buffer_copy(__inBuffer, _inputPos, _count, __outBuffer, _outputPos);
-                buffer_seek(__outBuffer, buffer_seek_relative, _count);
+                buffer_copy(_inBuffer, _inputPos, _count, _outBuffer, _outputPos);
+                buffer_seek(_outBuffer, buffer_seek_relative, _count);
                 
                 //Advance both position trackers
                 _inputPos  += _count;
@@ -173,24 +213,21 @@ function BufferBatch() constructor
             }
             
             //Now do some actual work!
-            var _count = _command.__countAdjusted;
             switch(_command.__type)
             {
-                case "insert":
-                case "prefix":
-                case "suffix":
-                    buffer_write(__outBuffer, buffer_text, _command.__content);
-                    _outputPos += _count;
+                case __BUFFER_BATCH_INSERT:
+                    buffer_write(_outBuffer, _command.__datatype, _command.__content);
+                    _outputPos += _command.__countAdjusted;
                 break;
                 
-                case "overwrite":
-                    buffer_write(__outBuffer, buffer_text, _command.__content);
-                    _inputPos  += _count;
-                    _outputPos += _count;
+                case __BUFFER_BATCH_OVERWRITE:
+                    buffer_write(_outBuffer, _command.__datatype, _command.__content);
+                    _outputPos += _command.__countAdjusted;
+                    _inputPos  += _command.__countAdjusted;
                 break;
                 
-                case "delete":
-                    _inputPos += _count;
+                case __BUFFER_BATCH_DELETE:
+                    _inputPos += _command.__countAdjusted;
                 break;
             }
             
@@ -199,14 +236,14 @@ function BufferBatch() constructor
         
         //Copy across any remaining data from the input buffer if the last command falls short of the
         //length of the input buffer.
-        if (_outputPos < _outputSize)
+        if (_inputPos < _inputSize)
         {
-            buffer_copy(__inBuffer, _inputPos, _outputSize - _outputPos, __outBuffer, _outputPos);
+            buffer_copy(_inBuffer, _inputPos, _inputSize - _inputPos, _outBuffer, _outputPos);
         }
         
-        buffer_seek(__outBuffer, buffer_seek_start, 0);
+        buffer_seek(_outBuffer, buffer_seek_start, 0);
         
-        return __outBuffer;
+        return _outBuffer;
     }
     
     #endregion
@@ -215,10 +252,11 @@ function BufferBatch() constructor
     
     #region Commands
     
-    static __CommandClass = function(_type, _position, _content, _count) constructor
+    static __CommandClass = function(_type, _position, _datatype, _content, _count) constructor
     {
         __type     = _type;
         __position = _position;
+        __datatype = _datatype;
         __count    = _count;
         __content  = _content;
         
@@ -228,65 +266,56 @@ function BufferBatch() constructor
         array_push(other.__commands, self);
     }
     
+    static Clear = function()
+    {
+        array_resize(__commands, 0);
+        return self;
+    }
+    
     static Delete = function(_position, _count)
     {
-        new __CommandClass("delete", _position, undefined, _count);
+        new __CommandClass(__BUFFER_BATCH_DELETE, _position, undefined, undefined, _count);
+        return self;
     }
     
-    static InsertString = function(_position, _content)
+    static Insert = function(_position, _content, _datatype = undefined)
     {
-        new __CommandClass("insert", _position, _content, string_byte_length(_content));
+        __AddCommand(__BUFFER_BATCH_INSERT, _position, _content, _datatype);
+        return self;
     }
     
-    static OverwriteString = function(_position, _content)
+    static Overwrite = function(_position, _content, _datatype = undefined)
     {
-        new __CommandClass("overwrite", _position, _content, string_byte_length(_content));
+        __AddCommand(__BUFFER_BATCH_OVERWRITE, _position, _content, _datatype);
+        return self;
     }
     
-    static PrefixString = function(_content)
+    static __AddCommand = function(_type, _position, _content, _datatype)
     {
-        new __CommandClass("prefix", -infinity, _content, string_byte_length(_content));
-    }
-    
-    static SuffixString = function(_content)
-    {
-        new __CommandClass("suffix", infinity, _content, string_byte_length(_content));
-    }
-    
-    #endregion
-    
-    
-    
-    #region Ingest
-    
-    static FromBuffer = function(_buffer)
-    {
-        if (__inBuffer != undefined) __Error("Input buffer already loaded");
+        if (_datatype == undefined)
+        {
+            if (is_string(_content))
+            {
+                _datatype = buffer_text;
+            }
+            else
+            {
+                __Error($"Datatype must be specified if content is not a string (content datatype={typeof(_content)})");
+            }
+        }
         
-        __inBuffer = _buffer;
-        buffer_seek(__inBuffer, buffer_seek_start, 0);
-        
-        return __inBuffer;
-    }
-    
-    static CopyFromBuffer = function(_buffer, _start = 0, _count = (buffer_get_size(_buffer) - _start))
-    {
-        if (__inBuffer != undefined) __Error("Input buffer already loaded");
-        
-        __inBuffer = buffer_create(_count, buffer_grow, 1);
-        buffer_copy(__inBuffer, _start, _count, _buffer, 0);
-        
-        return __inBuffer;
-    }
-    
-    static FromString = function(_string)
-    {
-        if (__inBuffer != undefined) __Error("Input buffer already loaded");
-        
-        __inBuffer = buffer_create(string_byte_length(_string), buffer_grow, 1);
-        buffer_write(__inBuffer, buffer_text, _string);
-        
-        return __inBuffer;
+        if (_datatype == buffer_text)
+        {
+            new __CommandClass(_type, _position, buffer_text, _content, string_byte_length(_content));
+        }
+        else if (_datatype == buffer_string)
+        {
+            new __CommandClass(_type, _position, buffer_string, _content, string_byte_length(_content)+1);
+        }
+        else
+        {
+            new __CommandClass(_type, _position, _datatype, _content, buffer_sizeof(_datatype));
+        }
     }
     
     #endregion
