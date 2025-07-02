@@ -1,12 +1,13 @@
 {
-  "isDnD": false,
-  "isCompatibility": false,
-  "parent": {
-    "name": "Buffer String Ops",
-    "path": "Buffer String Ops.yyp",
+  "$GMScript":"v1",
+  "%Name":"BufferBatch",
+  "isCompatibility":false,
+  "isDnD":false,
+  "name":"BufferBatch",
+  "parent":{
+    "name":"Buffer String Ops",
+    "path":"Buffer String Ops.yyp",
   },
-  "resourceVersion": "1.0",
-  "name": "BufferBatch",
-  "tags": [],
-  "resourceType": "GMScript",
+  "resourceType":"GMScript",
+  "resourceVersion":"2.0",
 }

@@ -1,0 +1,7 @@
+{
+  "FolderOrderSettings":[],
+  "ResourceOrderSettings":[
+    {"name":"oTest","order":1,"path":"objects/oTest/oTest.yy",},
+    {"name":"BufferBatch","order":2,"path":"scripts/BufferBatch/BufferBatch.yy",},
+  ],
+}

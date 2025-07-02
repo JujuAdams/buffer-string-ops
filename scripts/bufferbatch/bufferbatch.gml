@@ -8,13 +8,13 @@
 /// 
 /// .Delete(position, count)
 /// 
-/// .Insert(position, string, ...)
+/// .InsertString(position, string, ...)
 /// 
-/// .Overwrite(position, string, ...)
+/// .OverwriteString(position, string, ...)
 /// 
-/// .Prefix(string, ...)
+/// .PrefixString(string, ...)
 /// 
-/// .Suffix(string, ...)
+/// .SuffixString(string, ...)
 /// 
 /// .GetString()
 /// 
@@ -62,8 +62,6 @@ function BufferBatch() constructor
     
     static GetString = function()
     {
-        if (__destroyed) __Error("Worker has been destroyed");
-        
         GetBuffer();
         
         buffer_seek(__outBuffer, buffer_seek_start, 0);
@@ -72,8 +70,6 @@ function BufferBatch() constructor
     
     static GetBuffer = function()
     {
-        if (__destroyed) __Error("Worker has been destroyed");
-        
         //Early-out if we have no commands set up
         if (array_length(__commands) <= 0)
         {
@@ -102,6 +98,7 @@ function BufferBatch() constructor
         
         //Figure out the final size of the output buffer
         //TODO - Do this as we're adding commands
+        //TODO - Do we really need this? A greedy estimate is fine
         var _inputSize  = buffer_get_size(__inBuffer);
         var _inputPos   = 0;
         var _outputSize = _inputSize;
@@ -118,7 +115,7 @@ function BufferBatch() constructor
                     if (_inputPos + _count > _inputSize)
                     {
                         _count = _inputSize - _inputPos;
-                        _command.__count = _count;
+                        _command.__countAdjusted = _count;
                     }
                     
                     _outputSize -= _count;
@@ -154,46 +151,45 @@ function BufferBatch() constructor
         var _i = 0;
         repeat(array_length(__commands))
         {
+            //Pull the next command from the array
             var _command = __commands[_i];
             var _commandPos = _command.__position;
             
+            //Restrict prefix / suffix position
             _commandPos = clamp(_commandPos, 0, _inputSize);
             
             if ((_commandPos > _inputPos) && (_inputPos < _inputSize))
             {
+                //Our next command is further along the input buffer. This means we need to copy a chunk of the
+                //input buffer to the output buffer to fill in the gap.
                 var _count = _commandPos - _inputPos;
                 
                 buffer_copy(__inBuffer, _inputPos, _count, __outBuffer, _outputPos);
                 buffer_seek(__outBuffer, buffer_seek_relative, _count);
                 
+                //Advance both position trackers
                 _inputPos  += _count;
                 _outputPos += _count;
             }
             
-            var _count = _command.__count;
-            
+            //Now do some actual work!
+            var _count = _command.__countAdjusted;
             switch(_command.__type)
             {
                 case "insert":
                 case "prefix":
                 case "suffix":
-                case "overwrite":
-                    var _content = _command.__content;
-                    var _j = 0;
-                    repeat(array_length(_content))
-                    {
-                        buffer_write(__outBuffer, buffer_text, _content[_j]);
-                        ++_j;
-                    }
-                    
+                    buffer_write(__outBuffer, buffer_text, _command.__content);
                     _outputPos += _count;
                 break;
-            }
-            
-            switch(_command.__type)
-            {
-                case "delete":
+                
                 case "overwrite":
+                    buffer_write(__outBuffer, buffer_text, _command.__content);
+                    _inputPos  += _count;
+                    _outputPos += _count;
+                break;
+                
+                case "delete":
                     _inputPos += _count;
                 break;
             }
@@ -201,6 +197,8 @@ function BufferBatch() constructor
             ++_i;
         }
         
+        //Copy across any remaining data from the input buffer if the last command falls short of the
+        //length of the input buffer.
         if (_outputPos < _outputSize)
         {
             buffer_copy(__inBuffer, _inputPos, _outputSize - _outputPos, __outBuffer, _outputPos);
@@ -217,95 +215,42 @@ function BufferBatch() constructor
     
     #region Commands
     
-    static __CommandClass = function(_type, _nth, _position, _content, _count = undefined) constructor
+    static __CommandClass = function(_type, _position, _content, _count) constructor
     {
-        if (_count == undefined)
-        {
-            _count = 0;
-            
-            var _j = 0;
-            repeat(array_length(_content))
-            {
-                _count += string_byte_length(_content[_j]);
-                ++_j;
-            }
-        }
+        __type     = _type;
+        __position = _position;
+        __count    = _count;
+        __content  = _content;
         
-        __type         = _type;
-        __nth          = _nth;
-        __position     = _position;
-        __count        = _count;
-        __content      = _content;
+        __countAdjusted = _count;
+        
+        __nth = array_length(other.__commands);
+        array_push(other.__commands, self);
     }
     
     static Delete = function(_position, _count)
     {
-        if (__destroyed) __Error("Worker has been destroyed");
-        array_push(__commands, new __CommandClass("delete", array_length(__commands), _position, undefined, _count));
+        new __CommandClass("delete", _position, undefined, _count);
     }
     
-    static Insert = function()
+    static InsertString = function(_position, _content)
     {
-        if (__destroyed) __Error("Worker has been destroyed");
-        
-        var _position = argument[0];
-        
-        var _content = array_create(argument_count-1);
-        var _i = 1;
-        repeat(argument_count-1)
-        {
-            _content[@ _i-1] = string(argument[_i]);
-            ++_i;
-        }
-        
-        array_push(__commands, new __CommandClass("insert", array_length(__commands), _position, _content));
+        new __CommandClass("insert", _position, _content, string_byte_length(_content));
     }
     
-    static Overwrite = function()
+    static OverwriteString = function(_position, _content)
     {
-        if (__destroyed) __Error("Worker has been destroyed");
-        
-        var _position = argument[0];
-        
-        var _content = array_create(argument_count-1);
-        var _i = 1;
-        repeat(argument_count-1)
-        {
-            _content[@ _i-1] = string(argument[_i]);
-            ++_i;
-        }
-        
-        array_push(__commands, new __CommandClass("overwrite", array_length(__commands), _position, _content));
+        new __CommandClass("overwrite", _position, _content, string_byte_length(_content));
     }
     
-    static Prefix = function()
+    static PrefixString = function(_content)
     {
-        if (__destroyed) __Error("Worker has been destroyed");
-        
-        var _content = array_create(argument_count);
-        var _i = 0;
-        repeat(argument_count)
-        {
-            _content[@ _i] = string(argument[_i]);
-            ++_i;
-        }
-        
-        array_push(__commands, new __CommandClass("prefix", array_length(__commands), -infinity, _content));
+        new __CommandClass("prefix", -infinity, _content, string_byte_length(_content));
     }
     
-    static Suffix = function()
+    static SuffixString = function(_content)
     {
-        if (__destroyed) __Error("Worker has been destroyed");
-        
-        var _content = array_create(argument_count);
-        var _i = 0;
-        repeat(argument_count)
-        {
-            _content[@ _i] = string(argument[_i]);
-            ++_i;
-        }
-        
-        array_push(__commands, new __CommandClass("suffix", array_length(__commands), infinity, _content));
+        new __CommandClass("suffix", infinity, _content, string_byte_length(_content));
     }
     
     #endregion
@@ -316,7 +261,6 @@ function BufferBatch() constructor
     
     static FromBuffer = function(_buffer)
     {
-        if (__destroyed) __Error("Worker has been destroyed");
         if (__inBuffer != undefined) __Error("Input buffer already loaded");
         
         __inBuffer = _buffer;
@@ -327,7 +271,6 @@ function BufferBatch() constructor
     
     static CopyFromBuffer = function(_buffer, _start = 0, _count = (buffer_get_size(_buffer) - _start))
     {
-        if (__destroyed) __Error("Worker has been destroyed");
         if (__inBuffer != undefined) __Error("Input buffer already loaded");
         
         __inBuffer = buffer_create(_count, buffer_grow, 1);
@@ -338,7 +281,6 @@ function BufferBatch() constructor
     
     static FromString = function(_string)
     {
-        if (__destroyed) __Error("Worker has been destroyed");
         if (__inBuffer != undefined) __Error("Input buffer already loaded");
         
         __inBuffer = buffer_create(string_byte_length(_string), buffer_grow, 1);
@@ -351,17 +293,8 @@ function BufferBatch() constructor
     
     
     
-    static __Error = function()
+    static __Error = function(_string)
     {
-        var _string = "";
-        
-        var _i = 0;
-        repeat(argument_count)
-        {
-            _string += string(argument[_i]);
-            ++_i;
-        }
-        
-        show_error(_string + "\n ", true);
+        show_error("BufferBatch:\n" + string(_string) + "\n ", true);
     }
 }
